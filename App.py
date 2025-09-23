@@ -80,65 +80,90 @@ class PortfolioManager:
         return pd.DataFrame(rebalancing_data)
     
     def calculate_lump_sum_rebalancing(self, portfolio_data: Dict, additional_amount: float) -> pd.DataFrame:
-        """Calcola il ribilanciamento con aggiunta una tantum"""
-        new_total = portfolio_data['total_value'] + additional_amount
+        """Calcola il ribilanciamento con aggiunta una tantum - VERSIONE CORRETTA"""
+        # Calcola il nuovo valore totale del portafoglio
+        new_total_value = portfolio_data['total_value'] + additional_amount
+        
         allocation_data = []
+        total_to_invest = 0
         
         for asset in portfolio_data['assets_data']:
-            new_target_value = (asset['pct_target'] / 100) * new_total
-            needed_amount = max(0, new_target_value - asset['valore_attuale'])
+            # Calcola il nuovo valore target basato sul valore finale
+            new_target_value = (asset['pct_target'] / 100) * new_total_value
             
-            if needed_amount > 0.01:
+            # Calcola quanto investire in questo asset
+            amount_to_invest = new_target_value - asset['valore_attuale']
+            
+            if amount_to_invest > 0.01:  # Solo se c'è da investire
                 allocation_data.append({
                     'Asset': asset['nome'],
-                    'Importo da Investire (€)': f"{needed_amount:.2f}",
-                    'Importo_num': needed_amount,
-                    'Nuovo Valore Totale (€)': f"{new_target_value:.2f}"
+                    'Valore Attuale (€)': f"{asset['valore_attuale']:.2f}",
+                    'Valore Target (€)': f"{new_target_value:.2f}",
+                    'Da Investire (€)': f"{amount_to_invest:.2f}",
+                    'Importo_num': amount_to_invest
                 })
+                total_to_invest += amount_to_invest
         
         df = pd.DataFrame(allocation_data)
-        if not df.empty:
-            total_needed = df['Importo_num'].sum()
-            if total_needed > additional_amount:
-                # Scala proporzionalmente se l'importo non è sufficiente
-                scale_factor = additional_amount / total_needed
-                df['Importo da Investire (€)'] = df['Importo_num'].apply(lambda x: f"{x * scale_factor:.2f}")
-                df['Importo_num'] = df['Importo_num'] * scale_factor
+        
+        # Verifica che il totale da investire non superi l'importo disponibile
+        if not df.empty and total_to_invest > additional_amount:
+            st.warning(f"⚠️ Servirebbero €{total_to_invest:.2f} per il ribilanciamento completo, ma hai solo €{additional_amount:.2f} disponibili.")
+            st.info("💡 Gli importi sono stati ridotti proporzionalmente:")
+            
+            # Scala proporzionalmente
+            scale_factor = additional_amount / total_to_invest
+            df['Da Investire (€)'] = df['Importo_num'].apply(lambda x: f"{x * scale_factor:.2f}")
+            df['Importo_num'] = df['Importo_num'] * scale_factor
         
         return df.drop('Importo_num', axis=1) if not df.empty else df
     
     def calculate_pac_rebalancing(self, portfolio_data: Dict, num_rates: int, max_rate: float) -> pd.DataFrame:
-        """Calcola il piano di accumulo (PAC)"""
-        total_budget = num_rates * max_rate
+        """Calcola il piano di accumulo (PAC) - VERSIONE CORRETTA"""
         pac_plan = []
         
-        # Calcola il deficit totale degli asset sottopesati
-        total_deficit = sum(max(0, asset['differenza']) for asset in portfolio_data['assets_data'])
-        
-        if total_deficit <= 0:
-            return pd.DataFrame()
-        
-        # Calcola l'allocazione per ogni rata
+        # Simula il portafoglio che cresce ad ogni rata
         current_values = {asset['nome']: asset['valore_attuale'] for asset in portfolio_data['assets_data']}
         
         for rate in range(1, num_rates + 1):
             rate_data = {'Rata': rate}
-            current_total = sum(current_values.values()) + (rate - 1) * max_rate
+            
+            # Calcola il valore totale dopo questa rata
+            current_total = sum(current_values.values())
+            new_total_after_rate = current_total + max_rate
+            
+            # Calcola quanto investire in ogni asset per questa rata
+            investments_this_rate = {}
+            total_needed = 0
             
             for asset in portfolio_data['assets_data']:
-                current_value = current_values[asset['nome']]
-                target_value = (asset['pct_target'] / 100) * (current_total + max_rate)
-                needed = max(0, target_value - current_value)
+                # Valore target per questo asset dopo la rata
+                target_value_after_rate = (asset['pct_target'] / 100) * new_total_after_rate
                 
-                # Proporziona l'investimento in base al deficit
-                if total_deficit > 0:
-                    allocation = min(needed, (needed / total_deficit) * max_rate)
-                    if allocation > 0.01:
-                        rate_data[f"{asset['nome']} (€)"] = f"{allocation:.2f}"
-                        current_values[asset['nome']] += allocation
+                # Quanto manca per raggiungere il target
+                current_value = current_values[asset['nome']]
+                needed = max(0, target_value_after_rate - current_value)
+                
+                if needed > 0.01:
+                    investments_this_rate[asset['nome']] = needed
+                    total_needed += needed
+            
+            # Distribuisci la rata proporzionalmente ai bisogni
+            if total_needed > 0:
+                for asset_name, needed in investments_this_rate.items():
+                    # Calcola quanto investire proporzionalmente
+                    investment = min(needed, (needed / total_needed) * max_rate)
+                    
+                    if investment > 0.01:
+                        rate_data[f"{asset_name} (€)"] = f"{investment:.2f}"
+                        # Aggiorna il valore corrente per la prossima iterazione
+                        current_values[asset_name] += investment
             
             if len(rate_data) > 1:  # Se ci sono allocazioni per questa rata
                 pac_plan.append(rate_data)
+            else:
+                # Se non serve investire nulla, il portafoglio è già bilanciato
+                break
         
         return pd.DataFrame(pac_plan)
     
@@ -424,7 +449,7 @@ def main():
         
         with tab2:
             st.subheader("Ribilanciamento con Aggiunta Una Tantum")
-            st.write("Alloca denaro aggiuntivo senza vendere asset esistenti.")
+            st.write("Alloca denaro aggiuntivo senza vendere asset esistenti per raggiungere le percentuali target.")
             st.info(f"📊 Parametri configurati: €{st.session_state.additional_amount:,.2f}")
             
             if st.session_state.additional_amount > 0:
@@ -432,15 +457,19 @@ def main():
                 
                 if not lump_sum_df.empty:
                     st.dataframe(lump_sum_df, use_container_width=True, hide_index=True)
-                    st.info(f"💡 Con €{st.session_state.additional_amount:,.2f} aggiuntivi, il nuovo valore totale sarà €{portfolio_data['total_value'] + st.session_state.additional_amount:,.2f}")
+                    
+                    # Mostra il valore finale del portafoglio
+                    final_value = portfolio_data['total_value'] + st.session_state.additional_amount
+                    st.success(f"🎯 Valore finale del portafoglio: €{final_value:,.2f}")
+                    
                 else:
-                    st.success("🎯 Nessun asset necessita di investimenti aggiuntivi!")
+                    st.success("🎯 Il portafoglio è già perfettamente bilanciato! Non servono investimenti aggiuntivi.")
             else:
                 st.warning("⚠️ Imposta un importo maggiore di 0€ nella configurazione laterale")
         
         with tab3:
             st.subheader("Piano di Accumulo (PAC)")
-            st.write("Ribilanciamento progressivo nel tempo attraverso rate periodiche.")
+            st.write("Ribilanciamento progressivo nel tempo attraverso rate periodiche per raggiungere le percentuali target.")
             st.info(f"📊 Parametri configurati: {st.session_state.num_rates} rate da max €{st.session_state.max_rate:,.2f}")
             
             if st.session_state.max_rate > 0:
@@ -448,10 +477,20 @@ def main():
                 
                 if not pac_df.empty:
                     st.dataframe(pac_df, use_container_width=True, hide_index=True)
-                    total_investment = st.session_state.num_rates * st.session_state.max_rate
-                    st.info(f"💡 Investimento totale pianificato: €{total_investment:,.2f} in {st.session_state.num_rates} rate")
+                    
+                    # Calcola investimento effettivo
+                    actual_rates = len(pac_df)
+                    actual_investment = actual_rates * st.session_state.max_rate
+                    final_value = portfolio_data['total_value'] + actual_investment
+                    
+                    st.success(f"🎯 Investimento totale: €{actual_investment:,.2f} in {actual_rates} rate")
+                    st.success(f"🎯 Valore finale del portafoglio: €{final_value:,.2f}")
+                    
+                    if actual_rates < st.session_state.num_rates:
+                        st.info(f"💡 Il portafoglio raggiungerà il bilanciamento target dopo {actual_rates} rate invece di {st.session_state.num_rates}")
+                        
                 else:
-                    st.success("🎯 Il portafoglio non necessita di un piano di accumulo!")
+                    st.success("🎯 Il portafoglio è già perfettamente bilanciato! Non serve un piano di accumulo.")
             else:
                 st.warning("⚠️ Imposta un importo rata maggiore di 0€ nella configurazione laterale")
 
