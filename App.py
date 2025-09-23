@@ -79,157 +79,154 @@ class PortfolioManager:
         
         return pd.DataFrame(rebalancing_data)
     
-    def calculate_lump_sum_rebalancing(self, portfolio_data: Dict, additional_amount: float) -> pd.DataFrame:
-        """Calcola il ribilanciamento con aggiunta una tantum - VERSIONE CORRETTA"""
-        # Calcola il nuovo valore totale del portafoglio
-        new_total_value = portfolio_data['total_value'] + additional_amount
+    def calculate_lump_sum_rebalancing(self, portfolio_data: Dict) -> Dict:
+        """Calcola l'importo necessario per il ribilanciamento completo senza vendite"""
         
+        # Calcola quanto serve aggiungere per ogni asset sottopesato
+        total_needed = 0
         allocation_data = []
-        total_to_invest = 0
-        
-        for asset in portfolio_data['assets_data']:
-            # Calcola il nuovo valore target basato sul valore finale
-            new_target_value = (asset['pct_target'] / 100) * new_total_value
-            
-            # Calcola quanto investire in questo asset
-            amount_to_invest = new_target_value - asset['valore_attuale']
-            
-            if amount_to_invest > 0.01:  # Solo se c'è da investire
-                allocation_data.append({
-                    'Asset': asset['nome'],
-                    'Valore Attuale (€)': f"{asset['valore_attuale']:.2f}",
-                    'Valore Target (€)': f"{new_target_value:.2f}",
-                    'Da Investire (€)': f"{amount_to_invest:.2f}",
-                    'Importo_num': amount_to_invest
-                })
-                total_to_invest += amount_to_invest
-        
-        df = pd.DataFrame(allocation_data)
-        
-        # Verifica che il totale da investire non superi l'importo disponibile
-        if not df.empty and total_to_invest > additional_amount:
-            st.warning(f"⚠️ Servirebbero €{total_to_invest:.2f} per il ribilanciamento completo, ma hai solo €{additional_amount:.2f} disponibili.")
-            st.info("💡 Gli importi sono stati ridotti proporzionalmente:")
-            
-            # Scala proporzionalmente
-            scale_factor = additional_amount / total_to_invest
-            df['Da Investire (€)'] = df['Importo_num'].apply(lambda x: f"{x * scale_factor:.2f}")
-            df['Importo_num'] = df['Importo_num'] * scale_factor
-        
-        return df.drop('Importo_num', axis=1) if not df.empty else df
-    
-    def calculate_pac_rebalancing(self, portfolio_data: Dict, monthly_amount: float) -> Dict:
-        """Calcola il piano di accumulo (PAC) ottimizzato - rate uguali fino al target"""
-        
-        # Calcola il deficit totale (quanto manca per raggiungere tutti i target)
-        total_deficit = 0
-        deficits = {}
         
         for asset in portfolio_data['assets_data']:
             current_value = asset['valore_attuale']
+            target_pct = asset['pct_target']
             current_total = portfolio_data['total_value']
-            current_pct = (current_value / current_total) * 100
+            current_pct = asset['pct_attuale']
             
-            if current_pct < asset['pct_target']:
-                # Questo asset è sottopesato, calcola quanto manca
-                deficit_pct = asset['pct_target'] - current_pct
-                # Deficit assoluto basato sul valore attuale del portafoglio
-                deficit_amount = (deficit_pct / 100) * current_total
-                deficits[asset['nome']] = {
-                    'deficit': deficit_amount,
-                    'target_pct': asset['pct_target'],
-                    'current_pct': current_pct
-                }
-                total_deficit += deficit_amount
+            if current_pct < target_pct:
+                # Asset sottopesato - calcola quanto serve aggiungere
+                # Formula: per raggiungere target_pct con valore finale (V + X)
+                # current_value + aggiunta_asset = target_pct/100 * (current_total + X)
+                # dove X è il totale da aggiungere e aggiunta_asset è parte di X
+                
+                # Per ora calcola il deficit sulla base attuale
+                needed_for_current_total = (target_pct / 100) * current_total - current_value
+                
+                if needed_for_current_total > 0.01:
+                    allocation_data.append({
+                        'asset_name': asset['nome'],
+                        'current_value': current_value,
+                        'current_pct': current_pct,
+                        'target_pct': target_pct,
+                        'deficit_base': needed_for_current_total
+                    })
         
-        if total_deficit <= 0.01:
+        if not allocation_data:
+            return {
+                'total_needed': 0,
+                'allocation': pd.DataFrame(),
+                'message': 'Il portafoglio è già bilanciato!'
+            }
+        
+        # Risoluzione iterativa per trovare l'importo totale necessario
+        # Inizia con la somma dei deficit base
+        total_deficit = sum(item['deficit_base'] for item in allocation_data)
+        
+        # Itera fino a convergenza
+        for iteration in range(10):  # max 10 iterazioni
+            previous_total = total_deficit
+            new_total_value = portfolio_data['total_value'] + total_deficit
+            
+            # Ricalcola le allocazioni con il nuovo totale
+            new_total_needed = 0
+            for item in allocation_data:
+                new_target_value = (item['target_pct'] / 100) * new_total_value
+                needed = new_target_value - item['current_value']
+                new_total_needed += max(0, needed)
+            
+            total_deficit = new_total_needed
+            
+            # Controlla convergenza
+            if abs(total_deficit - previous_total) < 0.01:
+                break
+        
+        # Calcola l'allocazione finale
+        final_new_total = portfolio_data['total_value'] + total_deficit
+        final_allocation = []
+        
+        for item in allocation_data:
+            final_target_value = (item['target_pct'] / 100) * final_new_total
+            amount_to_add = final_target_value - item['current_value']
+            
+            if amount_to_add > 0.01:
+                final_allocation.append({
+                    'Asset': item['asset_name'],
+                    'Valore Attuale (€)': f"{item['current_value']:.2f}",
+                    'Target (%)': f"{item['target_pct']:.1f}%",
+                    'Valore Target (€)': f"{final_target_value:.2f}",
+                    'Da Aggiungere (€)': f"{amount_to_add:.2f}",
+                    'amount_num': amount_to_add
+                })
+        
+        return {
+            'total_needed': total_deficit,
+            'final_portfolio_value': final_new_total,
+            'allocation': pd.DataFrame(final_allocation)
+        }
+    
+    def calculate_pac_rebalancing(self, portfolio_data: Dict, monthly_amount: float) -> Dict:
+        """Calcola il piano di accumulo con rate uguali - VERSIONE CORRETTA"""
+        
+        if monthly_amount <= 0:
+            return {'months_needed': 0, 'plan': pd.DataFrame(), 'message': 'Importo mensile non valido'}
+        
+        # Prima calcola quanto serve in totale per il ribilanciamento
+        lump_sum_result = self.calculate_lump_sum_rebalancing(portfolio_data)
+        
+        if lump_sum_result['total_needed'] <= 0.01:
             return {'months_needed': 0, 'plan': pd.DataFrame(), 'message': 'Il portafoglio è già bilanciato!'}
         
-        # Calcola quanti mesi servono (arrotondando per eccesso)
-        months_needed = int(np.ceil(total_deficit / monthly_amount))
+        total_needed = lump_sum_result['total_needed']
         
-        # Calcola la distribuzione per ogni mese
+        # Calcola quanti mesi servono
+        months_needed = int(np.ceil(total_needed / monthly_amount))
+        
+        # Calcola le percentuali di allocazione per ogni asset sottopesato
+        allocation_percentages = {}
+        total_allocation = 0
+        
+        if not lump_sum_result['allocation'].empty:
+            for _, row in lump_sum_result['allocation'].iterrows():
+                amount = row['amount_num']
+                percentage = amount / total_needed
+                allocation_percentages[row['Asset']] = percentage
+                total_allocation += amount
+        
+        # Crea il piano mensile con rate uguali
         pac_plan = []
-        current_values = {asset['nome']: asset['valore_attuale'] for asset in portfolio_data['assets_data']}
         
         for month in range(1, months_needed + 1):
             month_data = {'Mese': month}
-            current_total = sum(current_values.values())
             
-            # Per ogni asset sottopesato, calcola quanto investire questo mese
-            month_investments = {}
-            total_month_need = 0
+            # Distribuisci l'importo mensile secondo le percentuali calcolate
+            for asset_name, percentage in allocation_percentages.items():
+                monthly_investment = monthly_amount * percentage
+                if monthly_investment > 0.01:
+                    month_data[f"{asset_name} (€)"] = f"{monthly_investment:.2f}"
             
-            for asset_name, deficit_info in deficits.items():
-                current_value = current_values[asset_name]
-                current_pct = (current_value / current_total) * 100 if current_total > 0 else 0
-                
-                if current_pct < deficit_info['target_pct']:
-                    # Calcola quanto serve per questo asset
-                    target_after_month = (deficit_info['target_pct'] / 100) * (current_total + monthly_amount)
-                    needed = max(0, target_after_month - current_value)
-                    
-                    if needed > 0.01:
-                        month_investments[asset_name] = needed
-                        total_month_need += needed
+            # Calcola il totale del mese
+            month_total = sum(monthly_amount * pct for pct in allocation_percentages.values())
+            month_data['Totale Mese (€)'] = f"{month_total:.2f}"
             
-            # Distribuisci l'importo mensile proporzionalmente
-            if total_month_need > 0 and month_investments:
-                remaining_budget = monthly_amount
-                
-                for asset_name, needed in month_investments.items():
-                    # Investi proporzionalmente al bisogno
-                    investment = min(needed, (needed / total_month_need) * monthly_amount)
-                    
-                    if investment > 0.01:
-                        month_data[f"{asset_name} (€)"] = f"{investment:.2f}"
-                        current_values[asset_name] += investment
-                        remaining_budget -= investment
-                
-                # Se avanza budget e c'è ancora squilibrio, distribuiscilo
-                if remaining_budget > 0.01:
-                    # Trova l'asset più sottopesato e investi lì il resto
-                    max_underweight = 0
-                    most_underweight_asset = None
-                    current_total_new = sum(current_values.values())
-                    
-                    for asset in portfolio_data['assets_data']:
-                        current_pct = (current_values[asset['nome']] / current_total_new) * 100
-                        underweight = asset['pct_target'] - current_pct
-                        if underweight > max_underweight:
-                            max_underweight = underweight
-                            most_underweight_asset = asset['nome']
-                    
-                    if most_underweight_asset and remaining_budget > 0.01:
-                        existing = float(month_data.get(f"{most_underweight_asset} (€)", "0").replace("€", ""))
-                        month_data[f"{most_underweight_asset} (€)"] = f"{existing + remaining_budget:.2f}"
-                        current_values[most_underweight_asset] += remaining_budget
-            
-            if len(month_data) > 1:  # Se ci sono investimenti questo mese
-                pac_plan.append(month_data)
-            else:
-                # Il portafoglio è bilanciato prima del previsto
-                months_needed = month - 1
-                break
+            pac_plan.append(month_data)
         
-        # Verifica se il bilanciamento è raggiunto
-        final_total = sum(current_values.values())
-        balanced = True
-        for asset in portfolio_data['assets_data']:
-            final_pct = (current_values[asset['nome']] / final_total) * 100
-            if abs(final_pct - asset['pct_target']) > 0.5:  # Tolleranza di 0.5%
-                balanced = False
-                break
+        # Calcolo finale
+        total_invested = months_needed * monthly_amount
+        final_portfolio_value = portfolio_data['total_value'] + total_invested
         
-        result = {
-            'months_needed': len(pac_plan),
+        # Verifica se l'importo totale investito copre il fabbisogno
+        coverage_ratio = total_invested / total_needed if total_needed > 0 else 1
+        is_sufficient = coverage_ratio >= 0.99  # 99% di copertura considerata sufficiente
+        
+        return {
+            'months_needed': months_needed,
             'plan': pd.DataFrame(pac_plan),
-            'total_invested': len(pac_plan) * monthly_amount,
-            'final_portfolio_value': final_total,
-            'balanced': balanced
+            'total_invested': total_invested,
+            'total_needed': total_needed,
+            'final_portfolio_value': final_portfolio_value,
+            'coverage_ratio': coverage_ratio,
+            'is_sufficient': is_sufficient,
+            'monthly_amount': monthly_amount
         }
-        
-        return result
     
     def create_portfolio_chart(self, portfolio_data: Dict):
         """Crea il grafico a torta comparativo"""
@@ -391,31 +388,18 @@ def main():
             else:
                 st.success(f"✅ Somma target: {total_target:.1f}%")
         
-        # Parametri di ribilanciamento
+        # Parametri PAC (solo questo rimane)
         if valid_assets and is_valid:
             st.divider()
-            st.subheader("⚙️ Parametri Ribilanciamento")
-            
-            # Parametri Una Tantum
-            with st.expander("💰 Una Tantum", expanded=True):
-                additional_amount = st.number_input(
-                    "Importo da Aggiungere (€)",
-                    min_value=0.0,
-                    value=1000.0,
-                    step=100.0,
-                    key="additional_amount"
-                )
-            
-            # Parametri PAC
-            with st.expander("📅 Piano di Accumulo", expanded=True):
-                monthly_amount = st.number_input(
-                    "Importo Mensile Fisso (€)", 
-                    min_value=0.0, 
-                    value=500.0, 
-                    step=50.0,
-                    key="monthly_amount",
-                    help="Il software calcolerà automaticamente quanti mesi servono per raggiungere il bilanciamento target"
-                )
+            st.subheader("📅 Piano di Accumulo")
+            monthly_amount = st.number_input(
+                "Importo Mensile Fisso (€)", 
+                min_value=0.0, 
+                value=500.0, 
+                step=50.0,
+                key="monthly_amount",
+                help="L'app calcolerà automaticamente quanti mesi servono per raggiungere il bilanciamento target"
+            )
         
         # Salvataggio portafoglio
         st.divider()
@@ -505,53 +489,60 @@ def main():
                 st.success("🎯 Il portafoglio è già perfettamente bilanciato!")
         
         with tab2:
-            st.subheader("Ribilanciamento con Aggiunta Una Tantum")
-            st.write("Alloca denaro aggiuntivo senza vendere asset esistenti per raggiungere le percentuali target.")
-            st.info(f"📊 Parametri configurati: €{st.session_state.additional_amount:,.2f}")
+            st.subheader("Ribilanciamento Una Tantum")
+            st.write("Calcolo dell'importo necessario per raggiungere il bilanciamento target senza vendere asset esistenti.")
             
-            if st.session_state.additional_amount > 0:
-                lump_sum_df = portfolio_manager.calculate_lump_sum_rebalancing(portfolio_data, st.session_state.additional_amount)
+            lump_sum_result = portfolio_manager.calculate_lump_sum_rebalancing(portfolio_data)
+            
+            if lump_sum_result['total_needed'] > 0:
+                # Mostra l'importo totale necessario
+                st.metric("💰 Importo Totale Necessario", f"€ {lump_sum_result['total_needed']:,.2f}")
                 
-                if not lump_sum_df.empty:
-                    st.dataframe(lump_sum_df, use_container_width=True, hide_index=True)
+                # Mostra come deve essere suddiviso
+                if not lump_sum_result['allocation'].empty:
+                    st.subheader("📋 Suddivisione per Asset")
+                    
+                    # Rimuovi la colonna numerica per la visualizzazione
+                    display_df = lump_sum_result['allocation'].drop('amount_num', axis=1)
+                    st.dataframe(display_df, use_container_width=True, hide_index=True)
                     
                     # Mostra il valore finale del portafoglio
-                    final_value = portfolio_data['total_value'] + st.session_state.additional_amount
-                    st.success(f"🎯 Valore finale del portafoglio: €{final_value:,.2f}")
-                    
-                else:
-                    st.success("🎯 Il portafoglio è già perfettamente bilanciato! Non servono investimenti aggiuntivi.")
+                    st.success(f"🎯 Valore finale del portafoglio: €{lump_sum_result['final_portfolio_value']:,.2f}")
+                
             else:
-                st.warning("⚠️ Imposta un importo maggiore di 0€ nella configurazione laterale")
+                st.success("🎯 Il portafoglio è già perfettamente bilanciato! Non servono investimenti aggiuntivi.")
         
         with tab3:
-            st.subheader("Piano di Accumulo (PAC) Ottimizzato")
-            st.write("Il software calcola automaticamente il numero minimo di mesi necessari per raggiungere il bilanciamento target con rate mensili fisse.")
-            st.info(f"📊 Importo mensile configurato: €{st.session_state.monthly_amount:,.2f}")
+            st.subheader("Piano di Accumulo (PAC) con Rate Uguali")
+            st.write("Calcolo automatico del numero di mesi necessari per raggiungere il bilanciamento con rate mensili fisse.")
             
             if st.session_state.monthly_amount > 0:
                 pac_result = portfolio_manager.calculate_pac_rebalancing(portfolio_data, st.session_state.monthly_amount)
                 
                 if pac_result['months_needed'] > 0:
-                    # Mostra il piano
-                    st.dataframe(pac_result['plan'], use_container_width=True, hide_index=True)
-                    
-                    # Statistiche del piano
+                    # Informazioni principali
                     col1, col2, col3 = st.columns(3)
                     with col1:
                         st.metric("📅 Mesi Necessari", pac_result['months_needed'])
                     with col2:
-                        st.metric("💰 Investimento Totale", f"€{pac_result['total_invested']:,.2f}")
+                        st.metric("💰 Rata Mensile", f"€{pac_result['monthly_amount']:,.2f}")
                     with col3:
-                        st.metric("🎯 Valore Finale", f"€{pac_result['final_portfolio_value']:,.2f}")
+                        st.metric("🎯 Investimento Totale", f"€{pac_result['total_invested']:,.2f}")
                     
-                    # Status bilanciamento
-                    if pac_result['balanced']:
-                        st.success("✅ Il portafoglio raggiungerà il perfetto bilanciamento target!")
+                    # Informazioni su copertura
+                    st.info(f"📊 Fabbisogno calcolato: €{pac_result['total_needed']:,.2f} | Copertura: {pac_result['coverage_ratio']*100:.1f}%")
+                    
+                    # Status
+                    if pac_result['is_sufficient']:
+                        st.success("✅ L'importo investito sarà sufficiente per raggiungere il bilanciamento target!")
                     else:
-                        st.info("📊 Il portafoglio si avvicinerà significativamente al bilanciamento target")
+                        st.warning("⚠️ L'importo investito potrebbe non essere completamente sufficiente. Considera di aumentare la rata mensile.")
                     
-                    # Calcolo tempo stimato
+                    # Piano dettagliato
+                    st.subheader("📋 Piano Mensile Dettagliato")
+                    st.dataframe(pac_result['plan'], use_container_width=True, hide_index=True)
+                    
+                    # Calcolo tempo
                     years = pac_result['months_needed'] / 12
                     if years >= 1:
                         st.info(f"⏱️ Tempo stimato: {years:.1f} anni ({pac_result['months_needed']} mesi)")
