@@ -302,7 +302,41 @@ def main():
             else:
                 st.success(f"✅ Somma target: {total_target:.1f}%")
         
+        # Parametri di ribilanciamento
+        if valid_assets and is_valid:
+            st.divider()
+            st.subheader("⚙️ Parametri Ribilanciamento")
+            
+            # Parametri Una Tantum
+            with st.expander("💰 Una Tantum", expanded=True):
+                additional_amount = st.number_input(
+                    "Importo da Aggiungere (€)",
+                    min_value=0.0,
+                    value=1000.0,
+                    step=100.0,
+                    key="additional_amount"
+                )
+            
+            # Parametri PAC
+            with st.expander("📅 Piano di Accumulo", expanded=True):
+                num_rates = st.number_input(
+                    "Numero di Rate", 
+                    min_value=1, 
+                    max_value=120, 
+                    value=6, 
+                    step=1,
+                    key="num_rates"
+                )
+                max_rate = st.number_input(
+                    "Importo Massimo per Rata (€)", 
+                    min_value=0.0, 
+                    value=500.0, 
+                    step=50.0,
+                    key="max_rate"
+                )
+        
         # Salvataggio portafoglio
+        st.divider()
         st.subheader("💾 Salva Portafoglio")
         if st.button("Scarica Configurazione"):
             if portfolio_name and valid_assets:
@@ -391,42 +425,35 @@ def main():
         with tab2:
             st.subheader("Ribilanciamento con Aggiunta Una Tantum")
             st.write("Alloca denaro aggiuntivo senza vendere asset esistenti.")
+            st.info(f"📊 Parametri configurati: €{st.session_state.additional_amount:,.2f}")
             
-            additional_amount = st.number_input(
-                "Importo da Aggiungere (€)",
-                min_value=0.0,
-                value=1000.0,
-                step=100.0
-            )
-            
-            if additional_amount > 0:
-                lump_sum_df = portfolio_manager.calculate_lump_sum_rebalancing(portfolio_data, additional_amount)
+            if st.session_state.additional_amount > 0:
+                lump_sum_df = portfolio_manager.calculate_lump_sum_rebalancing(portfolio_data, st.session_state.additional_amount)
                 
                 if not lump_sum_df.empty:
                     st.dataframe(lump_sum_df, use_container_width=True, hide_index=True)
-                    st.info(f"💡 Con €{additional_amount:,.2f} aggiuntivi, il nuovo valore totale sarà €{portfolio_data['total_value'] + additional_amount:,.2f}")
+                    st.info(f"💡 Con €{st.session_state.additional_amount:,.2f} aggiuntivi, il nuovo valore totale sarà €{portfolio_data['total_value'] + st.session_state.additional_amount:,.2f}")
                 else:
                     st.success("🎯 Nessun asset necessita di investimenti aggiuntivi!")
+            else:
+                st.warning("⚠️ Imposta un importo maggiore di 0€ nella configurazione laterale")
         
         with tab3:
             st.subheader("Piano di Accumulo (PAC)")
             st.write("Ribilanciamento progressivo nel tempo attraverso rate periodiche.")
+            st.info(f"📊 Parametri configurati: {st.session_state.num_rates} rate da max €{st.session_state.max_rate:,.2f}")
             
-            col1, col2 = st.columns(2)
-            with col1:
-                num_rates = st.number_input("Numero di Rate", min_value=1, value=6, step=1)
-            with col2:
-                max_rate = st.number_input("Importo Massimo per Rata (€)", min_value=0.0, value=500.0, step=50.0)
-            
-            if max_rate > 0:
-                pac_df = portfolio_manager.calculate_pac_rebalancing(portfolio_data, num_rates, max_rate)
+            if st.session_state.max_rate > 0:
+                pac_df = portfolio_manager.calculate_pac_rebalancing(portfolio_data, st.session_state.num_rates, st.session_state.max_rate)
                 
                 if not pac_df.empty:
                     st.dataframe(pac_df, use_container_width=True, hide_index=True)
-                    total_investment = num_rates * max_rate
-                    st.info(f"💡 Investimento totale pianificato: €{total_investment:,.2f} in {num_rates} rate")
+                    total_investment = st.session_state.num_rates * st.session_state.max_rate
+                    st.info(f"💡 Investimento totale pianificato: €{total_investment:,.2f} in {st.session_state.num_rates} rate")
                 else:
                     st.success("🎯 Il portafoglio non necessita di un piano di accumulo!")
+            else:
+                st.warning("⚠️ Imposta un importo rata maggiore di 0€ nella configurazione laterale")
 
 if __name__ == "__main__":
     main()
