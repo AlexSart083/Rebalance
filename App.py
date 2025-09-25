@@ -80,86 +80,61 @@ class PortfolioManager:
         return pd.DataFrame(rebalancing_data)
     
     def calculate_lump_sum_rebalancing(self, portfolio_data: Dict) -> Dict:
-        """Calcola l'importo necessario per il ribilanciamento completo senza vendite"""
+        """Calcola l'importo necessario per il ribilanciamento completo senza vendite - VERSIONE CORRETTA"""
         
-        # Calcola quanto serve aggiungere per ogni asset sottopesato
-        total_needed = 0
-        allocation_data = []
+        current_total = portfolio_data['total_value']
+        
+        # Trova il valore minimo necessario del portafoglio per bilanciare tutti gli asset
+        # Per ogni asset sovrapesato, calcola quale dovrebbe essere il valore totale del portafoglio
+        # perché quell'asset non sia più sovrapesato
+        min_total_needed = current_total
         
         for asset in portfolio_data['assets_data']:
             current_value = asset['valore_attuale']
             target_pct = asset['pct_target']
-            current_total = portfolio_data['total_value']
-            current_pct = asset['pct_attuale']
             
-            if current_pct < target_pct:
-                # Asset sottopesato - calcola quanto serve aggiungere
-                # Formula: per raggiungere target_pct con valore finale (V + X)
-                # current_value + aggiunta_asset = target_pct/100 * (current_total + X)
-                # dove X è il totale da aggiungere e aggiunta_asset è parte di X
-                
-                # Per ora calcola il deficit sulla base attuale
-                needed_for_current_total = (target_pct / 100) * current_total - current_value
-                
-                if needed_for_current_total > 0.01:
-                    allocation_data.append({
-                        'asset_name': asset['nome'],
-                        'current_value': current_value,
-                        'current_pct': current_pct,
-                        'target_pct': target_pct,
-                        'deficit_base': needed_for_current_total
-                    })
+            if target_pct > 0:
+                # Calcola quale dovrebbe essere il valore totale del portafoglio
+                # perché questo asset abbia esattamente la percentuale target
+                required_total = current_value / (target_pct / 100)
+                min_total_needed = max(min_total_needed, required_total)
         
-        if not allocation_data:
+        total_needed = min_total_needed - current_total
+        
+        if total_needed <= 0.01:
             return {
                 'total_needed': 0,
                 'allocation': pd.DataFrame(),
                 'message': 'Il portafoglio è già bilanciato!'
             }
         
-        # Risoluzione iterativa per trovare l'importo totale necessario
-        # Inizia con la somma dei deficit base
-        total_deficit = sum(item['deficit_base'] for item in allocation_data)
-        
-        # Itera fino a convergenza
-        for iteration in range(10):  # max 10 iterazioni
-            previous_total = total_deficit
-            new_total_value = portfolio_data['total_value'] + total_deficit
-            
-            # Ricalcola le allocazioni con il nuovo totale
-            new_total_needed = 0
-            for item in allocation_data:
-                new_target_value = (item['target_pct'] / 100) * new_total_value
-                needed = new_target_value - item['current_value']
-                new_total_needed += max(0, needed)
-            
-            total_deficit = new_total_needed
-            
-            # Controlla convergenza
-            if abs(total_deficit - previous_total) < 0.01:
-                break
-        
-        # Calcola l'allocazione finale
-        final_new_total = portfolio_data['total_value'] + total_deficit
+        # Calcola l'allocazione: aggiungi denaro solo agli asset NON sovrapesati
+        final_total = current_total + total_needed
         final_allocation = []
         
-        for item in allocation_data:
-            final_target_value = (item['target_pct'] / 100) * final_new_total
-            amount_to_add = final_target_value - item['current_value']
+        for asset in portfolio_data['assets_data']:
+            current_value = asset['valore_attuale']
+            current_pct = asset['pct_attuale']
+            target_pct = asset['pct_target']
             
-            if amount_to_add > 0.01:
+            # Valore target con il nuovo totale
+            target_value_final = (target_pct / 100) * final_total
+            amount_to_add = target_value_final - current_value
+            
+            # Aggiungi solo se l'asset non è già sovrapesato e serve davvero aggiungere
+            if current_pct <= target_pct and amount_to_add > 0.01:
                 final_allocation.append({
-                    'Asset': item['asset_name'],
-                    'Valore Attuale (€)': f"{item['current_value']:.2f}",
-                    'Target (%)': f"{item['target_pct']:.1f}%",
-                    'Valore Target (€)': f"{final_target_value:.2f}",
+                    'Asset': asset['nome'],
+                    'Valore Attuale (€)': f"{current_value:.2f}",
+                    'Target (%)': f"{target_pct:.1f}%",
+                    'Valore Target (€)': f"{target_value_final:.2f}",
                     'Da Aggiungere (€)': f"{amount_to_add:.2f}",
                     'amount_num': amount_to_add
                 })
         
         return {
-            'total_needed': total_deficit,
-            'final_portfolio_value': final_new_total,
+            'total_needed': total_needed,
+            'final_portfolio_value': final_total,
             'allocation': pd.DataFrame(final_allocation)
         }
     
@@ -182,14 +157,12 @@ class PortfolioManager:
         
         # Calcola le percentuali di allocazione per ogni asset sottopesato
         allocation_percentages = {}
-        total_allocation = 0
         
         if not lump_sum_result['allocation'].empty:
             for _, row in lump_sum_result['allocation'].iterrows():
                 amount = row['amount_num']
-                percentage = amount / total_needed
+                percentage = amount / total_needed if total_needed > 0 else 0
                 allocation_percentages[row['Asset']] = percentage
-                total_allocation += amount
         
         # Crea il piano mensile con rate uguali
         pac_plan = []
@@ -203,8 +176,8 @@ class PortfolioManager:
                 if monthly_investment > 0.01:
                     month_data[f"{asset_name} (€)"] = f"{monthly_investment:.2f}"
             
-            # Calcola il totale del mese
-            month_total = sum(monthly_amount * pct for pct in allocation_percentages.values())
+            # Calcola il totale del mese (dovrebbe essere uguale a monthly_amount)
+            month_total = monthly_amount
             month_data['Totale Mese (€)'] = f"{month_total:.2f}"
             
             pac_plan.append(month_data)
